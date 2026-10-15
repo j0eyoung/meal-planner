@@ -23,6 +23,8 @@ def add_todo(text):
 
 
 def notify(message, title="Meal prep"):
-    svc = config.options()["notify_service"]
+    svc = str(config.options()["notify_service"] or "").strip()
+    if svc and "." not in svc:
+        svc = "notify." + svc            # "mobile_app_pixel" -> "notify.mobile_app_pixel"
     if svc:
         _call("/services/" + svc.replace(".", "/", 1), {"title": title, "message": message})

@@ -1,6 +1,6 @@
 name: "Meal & Grocery Planner"
 description: "Weekly AI meal plans, recipes, a pantry you fill by scanning barcodes, and a store-grouped grocery list synced to Home Assistant."
-version: "0.1.0"
+version: "0.1.1"
 slug: "meal_planner"
 image: "ghcr.io/j0eyoung/{arch}-meal-planner"
 arch:
@@ -38,6 +38,6 @@ schema:
   upcdatabase_api_key: password?
   recipeapi_key: password?
   recipeapi_monthly_budget: int(10,500)?
-  todo_entity: match(^todo\.[a-z0-9_]+$)?
-  notify_service: match(^notify\.[a-z0-9_]+$)?
-  prep_reminder_time: match(^([01][0-9]|2[0-3]):[0-5][0-9]$)?
+  todo_entity: str?
+  notify_service: str?
+  prep_reminder_time: str?
