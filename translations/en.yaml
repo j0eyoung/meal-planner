@@ -1,0 +1,38 @@
+configuration:
+  claude_code_oauth_token:
+    name: Claude token
+    description: >-
+      Optional. Lets the planner use your Claude subscription (no API fees) without signing in on the
+      Plan tab. Run `claude setup-token` in the Claude Terminal add-on and paste the token here.
+  anthropic_api_key:
+    name: Anthropic API key
+    description: Optional fallback when Claude is not connected on the Plan tab. Billed per use. Stays on your Home Assistant.
+  model:
+    name: Claude model
+    description: Model used for plans and recipe import.
+  todo_entity:
+    name: Home Assistant to-do list
+    description: The grocery list is pushed to this list so Google speakers can read it.
+  notify_service:
+    name: Notify service
+    description: For example notify.mobile_app_pixel. Leave empty to turn off the prep reminder.
+  prep_reminder_time:
+    name: Prep reminder time
+    description: Time (HH:MM) of the night-before reminder about tomorrow's meals.
+  usda_api_key:
+    name: USDA FoodData Central key
+    description: >-
+      Optional. Free key from https://fdc.nal.usda.gov/api-key-signup for more barcode matches.
+      Without it a shared demo key is used, which is rate limited.
+  upcdatabase_api_key:
+    name: UPCDatabase.org key
+    description: >-
+      Optional last-resort barcode source. Free key from https://upcdatabase.org. Skipped when empty.
+  recipeapi_key:
+    name: Recipe API key
+    description: >-
+      Optional. Free key from https://recipeapi.io. Adds online recipe search and a daily
+      background sync that slowly grows your local recipe library.
+  recipeapi_monthly_budget:
+    name: Recipe API calls per month
+    description: Most calls per month (free plan allows 500). 10% is kept back for searches in the app.

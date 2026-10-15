@@ -1,0 +1,17 @@
+# Never bake credentials, local data or dev files into the image
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+__pycache__/
+*.pyc
+.git/
+.github/
+.claude/
+.env
+.env.*
+options.json
+*.md
+make_addon.ps1
+icon.png
+logo.png
