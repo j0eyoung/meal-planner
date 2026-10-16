@@ -61,3 +61,8 @@ configuration:
   s3_prefix:
     name: Photos folder
     description: Folder inside the bucket for recipe photos (meals/images).
+  pixabay_api_key:
+    name: Pixabay key
+    description: >-
+      Optional. Free key from https://pixabay.com/api/docs (sign up, issued instantly) for more recipe photos.
+      Without it, photos come from TheMealDB and Openverse, which need no key.

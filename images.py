@@ -18,6 +18,9 @@ import config
 import db
 
 PEXELS = "https://api.pexels.com/v1/search?per_page=1&orientation=landscape&query="
+PIXABAY = "https://pixabay.com/api/?key={key}&q={q}&image_type=photo&category=food&per_page=3&safesearch=true"
+MEALDB = "https://www.themealdb.com/api/json/v1/1/search.php?s="
+OPENVERSE = "https://api.openverse.org/v1/images/?page_size=5&mature=false&q="
 _client = {"c": None, "sig": None}
 _mem = OrderedDict()            # small in-memory cache of served pictures (no disk writes)
 _mem_lock = threading.Lock()
@@ -57,13 +60,57 @@ def _http(url, headers=None, limit=6_000_000):
         return r.read(limit)
 
 
-def pexels_search(name):
+def _mealdb(name):
+    """TheMealDB by dish name (free, no key): a close name match only, so 'Chicken curry' finds a curry photo."""
+    words = [w for w in name.lower().split() if len(w) > 2]
+    for q in (name, " ".join(words[-2:]), words[-1] if words else ""):
+        if not q:
+            continue
+        meals = json.loads(_http(MEALDB + urllib.parse.quote(q))).get("meals") or []
+        for m in meals:
+            if set(q.lower().split()) <= set((m.get("strMeal") or "").lower().replace(",", " ").split()):
+                return m.get("strMealThumb")
+    return None
+
+
+def _openverse(name):
+    """Openverse (WordPress's openly licensed image search, free, no key)."""
+    data = json.loads(_http(OPENVERSE + urllib.parse.quote(f"{name} dish food")))
+    for r in data.get("results") or []:
+        url = r.get("url") or ""
+        if url.startswith("https://") and url.lower().split("?")[0].endswith((".jpg", ".jpeg", ".png", ".webp")):
+            return url
+    return None
+
+
+def _pixabay(name):
+    key = config.options()["pixabay_api_key"]
+    if not key:
+        return None
+    data = json.loads(_http(PIXABAY.format(key=urllib.parse.quote(key), q=urllib.parse.quote(f"{name} food"))))
+    hits = data.get("hits") or []
+    return hits[0].get("webformatURL") if hits else None
+
+
+def _pexels(name):
     key = config.options()["pexels_api_key"]
     if not key:
         return None
     data = json.loads(_http(PEXELS + urllib.parse.quote(f"{name} food"), {"Authorization": key}))
     photos = data.get("photos") or []
     return photos[0]["src"].get("large") if photos else None
+
+
+def pexels_search(name):
+    """Find a photo for a dish: keyed services first when set, then the free no-key ones."""
+    for source in (_pexels, _pixabay, _mealdb, _openverse):
+        try:
+            url = source(name)
+        except Exception:
+            url = None
+        if url:
+            return url
+    return None
 
 
 def _shrink(raw):
@@ -125,9 +172,7 @@ def worker():
     while True:
         busy = False
         try:
-            if config.options()["pexels_api_key"] or bucket_ready() or db.rows(
-                    "SELECT 1 FROM recipes WHERE image_src IS NOT NULL AND (image IS NULL OR image='') LIMIT 1"):
-                busy = fill_one()
+            busy = fill_one()       # no-key sources (TheMealDB, Openverse) always work
         except Exception as e:
             print(f"Recipe picture failed: {e}", flush=True)
         time.sleep(20 if busy else 300)     # ~180 an hour at most, under Pexels' free 200
