@@ -4,7 +4,9 @@ import os
 
 _DEFAULTS = {
     "anthropic_api_key": "", "model": "claude-sonnet-5-5", "usda_api_key": "", "upcdatabase_api_key": "",
-    "recipeapi_key": "", "recipeapi_monthly_budget": 450,
+    "recipeapi_key": "", "recipeapi_monthly_budget": 450, "pexels_api_key": "",
+    "s3_endpoint": "", "s3_bucket": "", "s3_access_key": "", "s3_secret_key": "", "s3_region": "auto",
+    "s3_prefix": "meals/images",
     "todo_entity": "todo.shopping_list", "notify_service": "", "prep_reminder_time": "20:00",
 }
 

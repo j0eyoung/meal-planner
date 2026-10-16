@@ -56,6 +56,8 @@ const daysLeft = d => Math.round((new Date(d + "T12:00") - new Date(localISO(new
 const expiryText = d => { const n = daysLeft(d); return n < 0 ? `expired ${-n}d ago` : n === 0 ? "expires today" : `${n}d left`; };
 const num = v => Math.round(Number(v) || 0);
 const macros = m => m.calories ? `${num(m.calories)} kcal · P${num(m.protein)} C${num(m.carbs)} F${num(m.fat)} per serving` : "";
+const money = v => v ? "$" + (+v).toFixed(2) : "";
+const thumb = (url, cls = "thumb") => url ? `<img class="${cls}" src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : "";
 const qtyText = i => i.qty ? `${esc(+(+i.qty).toFixed(2))} ${esc(i.unit || "")}` : "";
 
 // ---------------------------------------------------------------- Claude sign-in (Claude Code CLI)
@@ -98,13 +100,13 @@ let planNotes = "";
 function mealRow(d, s) {
   const m = d.meals[s], people = d.people[s];
   return `<div class="meal">
-    <div style="flex:1;min-width:0"><div class="slot">${s} · <label class="muted">👥 <input type="number" min="1" max="30" value="${people}"
+    ${m ? thumb(m.image_url) : ""}<div style="flex:1;min-width:0"><div class="slot">${s} · <label class="muted">👥 <input type="number" min="1" max="30" value="${people}"
         class="people" data-mhc="${d.date}|${s}" aria-label="People for ${s}"></label></div>
-      ${m ? `<div>${esc(m.name)} ${matchChip(m.match)}</div><div class="macros">${macros(m)}</div>
+      ${m ? `<div>${esc(m.name)} ${matchChip(m.match)}</div><div class="macros">${macros(m)}${m.meal_cost ? ` · ≈ ${money(m.meal_cost)} for ${m.headcount}` : ""}</div>
         <details><summary class="muted">Recipe for ${m.headcount}</summary>
           <ul>${m.ingredients.map(i => `<li>${qtyText(i)} ${esc(i.name)}</li>`).join("")}</ul>
           <ol>${m.steps.map(x => `<li>${esc(x)}</li>`).join("")}</ol>
-          ${m.saved ? "" : `<button class="btn small" data-keep="${m.recipe_id}">Save to my recipes</button>`}</details>`
+          <button class="btn small" data-fav="${m.recipe_id}" data-on="${m.favorite ? 0 : 1}">${m.favorite ? "★ Favorite" : "☆ Favorite"}</button></details>`
         : '<div class="muted">Nothing planned</div>'}</div>
     <div class="row">${m ? (m.cooked ? '<span class="chip ok">✓ Cooked</span>' : `<button class="btn small" data-cook="${d.date}|${s}" title="Take the ingredients out of the pantry">🍳 Cooked</button>`) : ""}
       <button class="btn small" data-regen="${d.date}|${s}">${m ? "Swap" : "Add"}</button>
@@ -117,14 +119,16 @@ async function renderPlan() {
   if (seq !== renderSeq) return;
   $("#date").textContent = day(st.today);
   const running = gen.status === "running";
+  const week = days.reduce((t, d) => t + (d.cost || 0), 0);
   view.innerHTML = `
     <div class="card"><div class="row">
       <input id="notes" placeholder="Notes for this week (optional)" value="${esc(planNotes)}" style="flex:1">
       <button class="btn primary" id="gen" ${running ? "disabled" : ""}>${running ? "Generating…" : "Generate week"}</button></div>
       ${running ? '<p class="muted">Claude is planning the week. This takes a few minutes; you can leave this page.</p>' : ""}
-      ${gen.status === "error" ? `<p class="muted">Last generation failed: ${esc(gen.message)}</p>` : ""}</div>
+      ${gen.status === "error" ? `<p class="muted">Last generation failed: ${esc(gen.message)}</p>` : ""}
+      ${week ? `<p class="macros">This week ≈ ${money(week)} in groceries (Claude's estimate, tuned by your receipt prices)</p>` : ""}</div>
     <div id="claude-slot"></div>
-    ${days.map(d => `<div class="card"><div class="row sp"><h3>${day(d.date)}</h3>
+    ${days.map(d => `<div class="card"><div class="row sp"><h3>${day(d.date)} ${d.cost ? `<span class="chip">≈ ${money(d.cost)}</span>` : ""}</h3>
       <label class="row muted">Whole day 👥 <input type="number" min="1" max="30" value="${d.people.dinner}" class="people" data-hc="${d.date}"></label></div>
       ${SLOTS.map(s => mealRow(d, s)).join("")}</div>`).join("")}`;
   fillClaude(seq);
@@ -157,7 +161,7 @@ async function renderPlan() {
       toast(r.already ? "Already marked cooked." : r.changed.length ? "Used: " + r.changed.map(c => `${c.name} (${c.left} left)`).join(", ") : "Marked cooked. Nothing in the pantry matched.", 6000);
     });
   });
-  view.querySelectorAll("[data-keep]").forEach(b => b.onclick = () => act(() => api(`recipes/${b.dataset.keep}/save`, "POST"), "Saved to my recipes"));
+  wireFav();
   view.querySelectorAll("[data-clear]").forEach(b => b.onclick = () => {
     const [date, slot] = b.dataset.clear.split("|");
     act(() => api(`plan/meal?date=${date}&slot=${slot}`, "DELETE"));
@@ -178,27 +182,34 @@ function pollGeneration(seq) {
 }
 
 // ---------------------------------------------------------------- Recipes
-let recipeQuery = "", recipeSort = "", searching = false;
+let recipeQuery = "", recipeSort = "", recipeFav = false, searching = false;
+
+// ★ toggles a favorite anywhere (plan details or recipe cards): favorites top the list and the planner reuses them.
+function wireFav() {
+  view.querySelectorAll("[data-fav]").forEach(b => b.onclick = () =>
+    act(() => api(`recipes/${b.dataset.fav}/favorite?on=${b.dataset.on === "1"}`, "POST"), b.dataset.on === "1" ? "Added to favorites" : "Removed from favorites"));
+}
 
 const next7 = () => Array.from({ length: 7 }, (_, n) => { const d = new Date(); d.setDate(d.getDate() + n); return localISO(d); });
 
 async function renderRecipes(live = false) {
   const seq = ++renderSeq;
-  const [rs, lib] = await Promise.all([api(`recipes?q=${encodeURIComponent(recipeQuery)}&live=${live}&sort=${recipeSort}`, "GET", null, 90000), api("library")]);
+  const [rs, lib] = await Promise.all([api(`recipes?q=${encodeURIComponent(recipeQuery)}&live=${live}&sort=${recipeSort}&fav=${recipeFav}`, "GET", null, 90000), api("library")]);
   if (seq !== renderSeq) return;
   const ra = lib.recipeapi;
   const dayOpts = next7().map(d => `<option value="${d}">${day(d)}</option>`).join("");
   view.innerHTML = `
     <div class="card"><div class="row"><input id="rq" placeholder="Search recipes" value="${esc(recipeQuery)}" style="flex:1">
       <button class="btn" id="rs">Search</button><button class="btn" id="rl" title="Also search TheMealDB and Recipe API">Online</button>
-      <button class="btn ${recipeSort ? "primary" : ""}" id="rm" title="Recipes you can make from the pantry first">🥫 Can make</button></div>
-      <div class="macros">${lib.total} recipes stored${ra.enabled ? ` · Recipe API sync: ${ra.stored} pulled, ${ra.used}/${ra.cap} calls this month` : ""}</div></div>
+      <button class="btn ${recipeSort ? "primary" : ""}" id="rm" title="Recipes you can make from the pantry first">🥫 Can make</button>
+      <button class="btn ${recipeFav ? "primary" : ""}" id="rf" title="Only your favorites">★</button></div>
+      <div class="macros">Planned meals save here automatically. ★ the ones you love and the weekly plan brings them back. · ${lib.total} recipes stored${ra.enabled ? ` · Recipe API sync: ${ra.stored} pulled, ${ra.used}/${ra.cap} calls this month` : ""}</div></div>
     <div class="card"><h3>Import a recipe</h3>
       <input id="url" placeholder="Recipe URL"><div style="height:8px"></div>
       <textarea id="paste" placeholder="…or paste the recipe text"></textarea><div style="height:8px"></div>
       <button class="btn primary" id="imp">Import</button></div>
-    ${rs.map(r => `<div class="card"><div class="row sp"><h3>${esc(r.name)}</h3><span class="row">${matchChip(r.match)}<span class="chip">${esc(r.meal_type || "")} · ${esc(r.servings)} serv</span></span></div>
-      <div class="macros">${macros(r)}</div>
+    ${rs.map(r => `<div class="card">${thumb(r.image_url, "hero")}<div class="row sp"><h3>${esc(r.name)}</h3><span class="row">${matchChip(r.match)}${r.favorite ? '<span class="chip ok">★</span>' : ""}<span class="chip">${esc(r.meal_type || "")} · ${esc(r.servings)} serv</span></span></div>
+      <div class="macros">${macros(r)}${r.cost ? ` · ≈ ${money(r.cost)} per serving` : ""}</div>
       <details><summary class="muted">Ingredients &amp; steps</summary>
         <ul>${r.ingredients.map(i => `<li>${qtyText(i)} ${esc(i.name)}</li>`).join("")}</ul>
         <ol>${r.steps.map(s => `<li>${esc(s)}</li>`).join("")}</ol></details>
@@ -206,7 +217,7 @@ async function renderRecipes(live = false) {
         <select data-pday="${r.id}" aria-label="Day" style="width:auto">${dayOpts}</select>
         <select data-pslot="${r.id}" aria-label="Meal" style="width:auto">${SLOTS.map(s => `<option ${s === (r.meal_type === "breakfast" ? "breakfast" : "dinner") ? "selected" : ""}>${s}</option>`).join("")}</select>
         <button class="btn small" data-plan="${r.id}">Add to plan</button></div>
-      <div class="row" style="margin-top:8px">${r.saved ? `<button class="btn small" data-fav="${r.id}">${r.favorite ? "★ Favorite" : "☆ Favorite"}</button>
+      <div class="row" style="margin-top:8px">${r.saved ? `<button class="btn small" data-fav="${r.id}" data-on="${r.favorite ? 0 : 1}">${r.favorite ? "★ Favorite" : "☆ Favorite"}</button>
       <button class="btn small danger" data-del="${r.id}">Delete</button>` : `<button class="btn small primary" data-save="${r.id}">Save to my recipes</button>
       <span class="chip">${esc(r.origin)}</span>`}</div></div>`).join("") || `<p class="muted">${recipeQuery ? "No matches. Try Online." : "No recipes yet."}</p>`}`;
   const go = live => {
@@ -219,6 +230,7 @@ async function renderRecipes(live = false) {
   $("#rs").onclick = () => go(false);
   $("#rl").onclick = () => go(true);
   $("#rm").onclick = () => { recipeSort = recipeSort ? "" : "match"; go(false); };
+  $("#rf").onclick = () => { recipeFav = !recipeFav; go(false); };
   $("#rq").onkeydown = e => { if (e.key === "Enter") go(false); };
   view.querySelectorAll("[data-save]").forEach(b => b.onclick = () => act(() => api(`recipes/${b.dataset.save}/save`, "POST"), "Saved"));
   view.querySelectorAll("[data-plan]").forEach(b => b.onclick = () => {
@@ -230,20 +242,19 @@ async function renderRecipes(live = false) {
     toast("Importing…", 0); await api("recipes/import", "POST", { url: url || null, text: text || null }, 300000);
   }, "Recipe saved", { keep: true });
   view.querySelectorAll("[data-del]").forEach(b => b.onclick = () => confirm("Delete recipe?") && act(() => api("recipes/" + b.dataset.del, "DELETE")));
-  view.querySelectorAll("[data-fav]").forEach(b => b.onclick = () => act(async () => {
-    const r = rs.find(x => x.id == b.dataset.fav); await api("recipes/" + r.id, "PUT", { ...r, favorite: r.favorite ? 0 : 1 });
-  }));
+  wireFav();
 }
 
 // ---------------------------------------------------------------- Grocery
 async function renderGrocery() {
   const seq = ++renderSeq;
-  const [groups, sugg] = await Promise.all([api("grocery"), api("grocery/suggestions")]);
+  const [groups, sugg, est] = await Promise.all([api("grocery"), api("grocery/suggestions"), api("grocery/estimate")]);
   if (seq !== renderSeq) return;
   view.innerHTML = `
     <div class="card row">
       <button class="btn" id="rb">Rebuild from plan</button>
       <button class="btn primary" id="sync">Send to Home Assistant list</button></div>
+    ${est.priced ? `<p class="macros">≈ ${money(est.total)} for the ${est.priced} of ${est.items} items you have receipt prices for</p>` : ""}
     <div class="card row"><input id="gn" placeholder="Add item" style="flex:1"><button class="btn" id="ga">Add</button></div>
     ${sugg.length ? `<div class="card"><h3>Probably due again</h3><div class="row">${sugg.map((s, n) =>
       `<button class="btn small" data-sg="${n}" title="Usually every ${s.every_days} days, last bought ${esc(s.last)}">+ ${esc(s.name)}</button>`).join("")}</div></div>` : ""}
@@ -404,7 +415,7 @@ async function importReceipt() {
   ++renderSeq;
   view.innerHTML = `<div class="card"><h3>Receipt: ${items.length} items</h3><p class="muted">Untick anything you don't want in the pantry.</p>
     ${items.map((it, n) => `<label class="item"><input type="checkbox" data-ri="${n}" checked>
-      <span class="nm">${esc(it.name)} <span class="muted">× ${esc(it.qty || 1)} ${esc(it.pack_size || "")}</span></span></label>`).join("")}
+      <span class="nm">${esc(it.name)} <span class="muted">× ${esc(it.qty || 1)} ${esc(it.pack_size || "")} ${it.price ? money(it.price) : ""}</span></span></label>`).join("")}
     <div class="row" style="margin-top:10px"><button class="btn primary" id="radd">Add to pantry</button><button class="btn" id="rcan">Cancel</button></div></div>`;
   $("#rcan").onclick = render;
   $("#radd").onclick = () => act(async () => {

@@ -34,9 +34,10 @@ def _store(r, origin, ext_id):
     if not r["name"] or ai.violates_diet(r):
         return None
     db.run("INSERT OR IGNORE INTO recipes(name,meal_type,servings,ingredients,steps,calories,protein,carbs,fat,"
-           "source_url,saved,origin,ext_id) VALUES(?,?,?,?,?,?,?,?,?,?,0,?,?)",
+           "source_url,saved,origin,ext_id,cost,image_src) VALUES(?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)",
            (r["name"], r["meal_type"], r["servings"], json.dumps(r["ingredients"]), json.dumps(r["steps"]),
-            r["calories"], r["protein"], r["carbs"], r["fat"], r.get("source_url"), origin, str(ext_id)))
+            r["calories"], r["protein"], r["carbs"], r["fat"], r.get("source_url"), origin, str(ext_id),
+            r["cost"], r["image_src"]))
     hit = db.rows("SELECT id FROM recipes WHERE origin=? AND ext_id=?", (origin, str(ext_id)))
     return hit[0]["id"] if hit else None
 
@@ -75,7 +76,7 @@ def _from_recipeapi(d):
     return {"name": d.get("name") or "", "meal_type": MEAL_SLOT.get(d.get("meal_type"), "dinner"),
             "servings": d.get("servings") or 1, "calories": d.get("calories_per_serving"),
             "protein": d.get("protein"), "steps": d.get("instructions") or [],
-            "source_url": f"https://recipeapi.io/recipes/{d.get('id')}",
+            "source_url": f"https://recipeapi.io/recipes/{d.get('id')}", "image": d.get("image"),
             "ingredients": [{"name": i["name"], "qty": i.get("quantity") or 0,
                              "unit": rx._unit(i.get("unit") or "") or
                              ("" if i.get("unit") in (None, "piece", "clove", "slice") else str(i["unit"])[:20]),
@@ -136,6 +137,7 @@ def _from_mealdb(m):
     steps = [s.strip() for s in re.split(r"\r?\n+", m.get("strInstructions") or "") if len(s.strip()) > 3]
     cat = (m.get("strCategory") or "").lower()
     return {"name": m["strMeal"], "meal_type": "breakfast" if cat == "breakfast" else "dinner", "servings": 4,
+            "image": m.get("strMealThumb"),
             "ingredients": ings, "steps": steps, "source_url": m.get("strSource") or
             f"https://www.themealdb.com/meal/{m['idMeal']}"}
 

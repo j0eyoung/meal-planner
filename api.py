@@ -10,7 +10,7 @@ import time
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -20,6 +20,7 @@ import config
 import db
 import grocery
 import ha
+import images
 import kitchen
 import pantry
 import recipes as rx
@@ -41,6 +42,9 @@ def _version():
 VERSION = _version()
 
 db.init_db()
+if not db.get_setting("autosave_migrated"):        # 0.1.2: meals that were planned before now count as saved
+    db.run("UPDATE recipes SET saved=1 WHERE id IN (SELECT recipe_id FROM plan_meals) OR origin='claude'")
+    db.set_setting("autosave_migrated", True)
 app = FastAPI(title="Meal & Grocery Planner", docs_url=None, redoc_url=None, openapi_url=None)
 
 # Only Home Assistant may talk to the add-on: the ingress proxy (172.30.32.2, already logged in to HA) for the
@@ -166,14 +170,22 @@ def save_recipe(r, rid=None):
     if not c["name"]:
         raise HTTPException(422, "The recipe has no name.")
     vals = (c["name"], c["meal_type"], c["servings"], json.dumps(c["ingredients"]), json.dumps(c["steps"]),
-            c["calories"], c["protein"], c["carbs"], c["fat"], c["source_url"], int(bool(r.get("favorite"))))
+            c["calories"], c["protein"], c["carbs"], c["fat"], c["source_url"], int(bool(r.get("favorite"))),
+            c["cost"])
     if rid:
         db.run("UPDATE recipes SET name=?,meal_type=?,servings=?,ingredients=?,steps=?,calories=?,protein=?,"
-               "carbs=?,fat=?,source_url=?,favorite=? WHERE id=?", vals + (rid,))
+               "carbs=?,fat=?,source_url=?,favorite=?,cost=COALESCE(?,cost) WHERE id=?", vals + (rid,))
         return rid
     return db.run("INSERT INTO recipes(name,meal_type,servings,ingredients,steps,calories,protein,carbs,fat,"
-                  "source_url,favorite,saved,origin) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                  vals + (int(r.get("saved", 1)), r.get("origin", "mine")))
+                  "source_url,favorite,cost,saved,origin,image_src) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  vals + (int(r.get("saved", 1)), r.get("origin", "mine"), c["image_src"]))
+
+
+def save_or_reuse(r):
+    """Auto-save a planned recipe to My recipes, reusing one with the same name instead of piling up copies."""
+    name = str((r or {}).get("name") or "").strip()
+    hit = db.rows("SELECT id FROM recipes WHERE saved=1 AND lower(name)=lower(?) ORDER BY favorite DESC, id LIMIT 1", (name,))
+    return hit[0]["id"] if hit else save_recipe({**r, "saved": 1})
 
 
 def inflate(r, keys=None):
@@ -181,17 +193,39 @@ def inflate(r, keys=None):
     r["steps"] = grocery.clean_steps(r.get("steps"))
     r["servings"] = int(grocery.to_qty(r.get("servings")) or 1)
     r["match"] = kitchen.match(r["ingredients"], keys)
+    r["image_url"] = images.url_for(r)
     return r
 
 
+def price_hints():
+    """Latest price per product from receipt photos, for Claude's cost estimates."""
+    rows = db.rows("SELECT name, store, price, qty, pack_size FROM prices WHERE id IN "
+                   "(SELECT max(id) FROM prices GROUP BY key) ORDER BY id DESC LIMIT 40")
+    return [f"{r['name']}{' ' + r['pack_size'] if r['pack_size'] else ''}: ${r['price'] / max(r['qty'] or 1, 1):.2f}"
+            f"{' at ' + grocery.STORE_LABEL.get(r['store'], '') if r['store'] else ''}" for r in rows]
+
+
+@app.get("/api/img/{rid}")
+def recipe_image(rid: int):
+    r = db.rows("SELECT image FROM recipes WHERE id=?", (rid,))
+    if not r or not (r[0]["image"] or "").startswith("b2:"):
+        raise HTTPException(404, "No picture.")
+    try:
+        data = images.fetch(r[0]["image"])
+    except Exception:
+        raise HTTPException(502, "Could not load the picture.")
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=2592000"})
+
+
 @app.get("/api/recipes")
-def recipes(q: str = "", live: bool = False, sort: str = ""):
+def recipes(q: str = "", live: bool = False, sort: str = "", fav: bool = False):
     """My recipes by default; with q, search the local library (plus TheMealDB/Recipe API when live).
     sort=match puts the recipes you can make from the pantry first."""
     q = q.strip()[:100]
     keys = kitchen.pantry_keys()
     rows = sources.search(q, live) if q else \
-        db.rows("SELECT * FROM recipes WHERE saved=1 ORDER BY favorite DESC, name")
+        db.rows("SELECT * FROM recipes WHERE saved=1" + (" AND favorite=1" if fav else "") +
+                " ORDER BY favorite DESC, name")
     out = [inflate(r, keys) for r in rows]
     if sort == "match" or q:
         out.sort(key=lambda r: (-(r.get("saved") or 0), -(r["match"]["have"] / max(r["match"]["total"], 1))))
@@ -201,6 +235,13 @@ def recipes(q: str = "", live: bool = False, sort: str = ""):
 @app.post("/api/recipes/{rid}/save")
 def recipe_save(rid: int, saved: bool = True):
     db.run("UPDATE recipes SET saved=? WHERE id=?", (int(saved), rid))
+    return {"ok": True}
+
+
+@app.post("/api/recipes/{rid}/favorite")
+def recipe_favorite(rid: int, on: bool = True):
+    """Favorites stay at the top of My recipes and the weekly planner reuses them."""
+    db.run("UPDATE recipes SET favorite=?, saved=CASE WHEN ? THEN 1 ELSE saved END WHERE id=?", (int(on), int(on), rid))
     return {"ok": True}
 
 
@@ -284,15 +325,23 @@ def plan(start: Optional[str] = None):
     keys = kitchen.pantry_keys()
     meals = {}
     for m in db.rows("SELECT pm.date, pm.slot, pm.headcount, pm.recipe_id, pm.cooked, r.name, r.servings, r.calories, "
-                     "r.protein, r.carbs, r.fat, r.ingredients, r.steps, r.saved FROM plan_meals pm "
+                     "r.protein, r.carbs, r.fat, r.ingredients, r.steps, r.saved, r.favorite, r.cost, r.image, r.image_src "
+                     "FROM plan_meals pm "
                      "JOIN recipes r ON r.id=pm.recipe_id WHERE pm.date BETWEEN ? AND ?", (dates[0], dates[-1])):
         ings = grocery.clean_ingredients(m.pop("ingredients"))
         servings = int(grocery.to_qty(m["servings"]) or 1)
         m["match"] = kitchen.match(ings, keys)
         m["ingredients"] = _scaled(ings, (m["headcount"] or 1) / servings)   # amounts for the people eating
         m["steps"] = grocery.clean_steps(m["steps"])
+        m["meal_cost"] = round(m["cost"] * (m["headcount"] or 1), 2) if m["cost"] else None
+        m["image_url"] = images.url_for({**m, "id": m["recipe_id"]})
         meals[(m["date"], m["slot"])] = m
-    return [{"date": d, "people": hc[d], "meals": {s: meals.get((d, s)) for s in SLOTS}} for d in dates]
+    out = []
+    for d in dates:
+        day_meals = {s: meals.get((d, s)) for s in SLOTS}
+        costs = [m["meal_cost"] for m in day_meals.values() if m and m["meal_cost"]]
+        out.append({"date": d, "people": hc[d], "meals": day_meals, "cost": round(sum(costs), 2) if costs else None})
+    return out
 
 
 class CookReq(BaseModel):
@@ -370,12 +419,12 @@ def _run_generation(start, notes):
             "GROUP BY r.name ORDER BY max(pm.date) DESC LIMIT 40",
             ((datetime.date.today() - datetime.timedelta(days=21)).isoformat(),))]
         saved = _favorite_ids()
-        favs = [r["name"] for r in db.rows("SELECT name FROM recipes WHERE saved=1 ORDER BY favorite DESC, id DESC LIMIT 40")]
-        items, bad = ai.generate_week(dates, hc, pantry.names(), recent, notes, use_soon(), favs)
+        favs = [r["name"] for r in db.rows("SELECT name FROM recipes WHERE favorite=1 ORDER BY id DESC LIMIT 40")]
+        items, bad = ai.generate_week(dates, hc, pantry.names(), recent, notes, use_soon(), favs, price_hints())
         for b in bad:                   # Claude slipped in ocean fish: replace just that meal
             try:
                 r = ai.regenerate_meal(b["date"], b["slot"], hc[b["date"]][b["slot"]], pantry.names(),
-                                       b["recipe"].get("name", ""), "no fish at all", use_soon())
+                                       b["recipe"].get("name", ""), "no fish at all", use_soon(), price_hints())
                 items.append({"date": b["date"], "slot": b["slot"], "recipe": r})
             except Exception:
                 _gen["skipped"] += 1
@@ -387,7 +436,7 @@ def _run_generation(start, notes):
                     _gen["skipped"] += 1
                     continue
             else:
-                rid = save_recipe({**it["recipe"], "saved": 0, "origin": "claude"})
+                rid = save_or_reuse({**it["recipe"], "origin": "claude"})
             db.run("INSERT OR REPLACE INTO plan_meals(date,slot,recipe_id,headcount,cooked) VALUES(?,?,?,?,0)",
                    (it["date"], it["slot"], rid, people))
         grocery.rebuild(dates[0], dates[-1])
@@ -432,12 +481,13 @@ def regen_meal(req: MealReq):
         if not db.rows("SELECT 1 FROM recipes WHERE id=?", (req.recipe_id,)):
             raise HTTPException(404, "No such recipe.")
         rid = req.recipe_id
+        db.run("UPDATE recipes SET saved=1 WHERE id=?", (rid,))     # planned from the library -> My recipes
     else:
         cur = db.rows("SELECT r.name FROM plan_meals pm JOIN recipes r ON r.id=pm.recipe_id "
                       "WHERE pm.date=? AND pm.slot=?", (d, slot))
         r = guarded(ai.regenerate_meal, d, slot, people, pantry.names(),
-                    cur[0]["name"] if cur else "", req.hint, use_soon())
-        rid = save_recipe({**r, "saved": 0, "origin": "claude"})
+                    cur[0]["name"] if cur else "", req.hint, use_soon(), price_hints())
+        rid = save_or_reuse({**r, "origin": "claude"})
     db.run("INSERT OR REPLACE INTO plan_meals(date,slot,recipe_id,headcount,cooked) VALUES(?,?,?,?,0)",
            (d, slot, rid, people))
     rebuild_list()
@@ -456,6 +506,22 @@ def clear_meal(date: str, slot: str):
 @app.get("/api/grocery")
 def grocery_get():
     return grocery.listing()
+
+
+@app.get("/api/grocery/estimate")
+def grocery_estimate():
+    """Rough total of the unticked list from what you paid last time (receipt photos)."""
+    known = {}
+    for r in db.rows("SELECT key, price, qty FROM prices WHERE id IN (SELECT max(id) FROM prices GROUP BY key)"):
+        known[r["key"]] = r["price"] / max(r["qty"] or 1, 1)
+    total, priced, items = 0.0, 0, db.rows("SELECT name FROM grocery WHERE checked=0")
+    for g in items:
+        n = grocery.norm(g["name"])
+        hit = next((v for k, v in known.items() if k and grocery.same(k, n)), None)
+        if hit:
+            total += hit
+            priced += 1
+    return {"total": round(total, 2), "priced": priced, "items": len(items)}
 
 
 @app.post("/api/grocery/rebuild")
@@ -737,3 +803,4 @@ def sync_loop():
 
 threading.Thread(target=reminder_loop, daemon=True).start()
 threading.Thread(target=sync_loop, daemon=True).start()
+threading.Thread(target=images.worker, daemon=True).start()

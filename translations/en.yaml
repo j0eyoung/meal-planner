@@ -36,3 +36,28 @@ configuration:
   recipeapi_monthly_budget:
     name: Recipe API calls per month
     description: Most calls per month (free plan allows 500). 10% is kept back for searches in the app.
+  pexels_api_key:
+    name: Pexels key
+    description: >-
+      Optional. Free key from https://www.pexels.com/api to find a photo for recipes Claude writes.
+      Imported and TheMealDB recipes bring their own photo.
+  s3_endpoint:
+    name: Bucket endpoint
+    description: >-
+      Optional. Keeps a small copy of each recipe photo in your private bucket so links never break. Same
+      endpoint as the workout add-on (for Backblaze B2 like https://s3.us-west-004.backblazeb2.com).
+  s3_bucket:
+    name: Bucket name
+    description: Name of the bucket for the recipe photos.
+  s3_access_key:
+    name: Bucket access key
+    description: The key ID. It needs read and write access to the bucket. Stays on your Home Assistant.
+  s3_secret_key:
+    name: Bucket secret key
+    description: The secret that goes with the access key.
+  s3_region:
+    name: Bucket region
+    description: Leave as "auto" unless your storage provider asks for a region name.
+  s3_prefix:
+    name: Photos folder
+    description: Folder inside the bucket for recipe photos (meals/images).

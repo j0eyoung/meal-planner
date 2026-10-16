@@ -31,13 +31,14 @@ SYSTEM = (
     "Beverages, Other). For Costco items add a short `note` about the bulk pack size when relevant. Prefer "
     "reusing ingredients across the week and prefer ingredients from the provided pantry. Quantities are for "
     "the recipe's stated `servings`. Use units: g, kg, ml, l, tsp, tbsp, cup, oz, lb, or '' for counts, and "
-    "numbers (not fractions in strings) for qty. Reply with JSON only, no prose."
+    "numbers (not fractions in strings) for qty. `cost_per_serving` is a rough USD estimate at Colorado "
+    "Costco/King Soopers prices (use the cook's recent prices when given). Reply with JSON only, no prose."
 )
 
 RECIPE_SHAPE = (
     '{"name":str,"meal_type":"breakfast|lunch|dinner","servings":int,"ingredients":[{"name":str,"qty":number,'
     '"unit":str,"aisle":str,"store":str,"note":str}],"steps":[str],"calories":number,"protein":number,'
-    '"carbs":number,"fat":number}'
+    '"carbs":number,"fat":number,"cost_per_serving":number}'
 )
 
 # One Claude job at a time: each CLI run is a few hundred MB of Node on a 4 GB Green, and every call
@@ -125,17 +126,22 @@ def _use_soon_line(use_soon):
             if use_soon else "")
 
 
-def generate_week(dates, headcounts, pantry_names, avoid=(), notes="", use_soon=(), favorites=()):
+def _prices_line(prices):
+    return f"Recent prices the cook paid: {json.dumps(list(prices)[:40])}.\n" if prices else ""
+
+
+def generate_week(dates, headcounts, pantry_names, avoid=(), notes="", use_soon=(), favorites=(), prices=()):
     """headcounts: {date: {slot: people}}. Returns (items, skipped) where items are
     {"date","slot","recipe"} or {"date","slot","saved_recipe": name}."""
     days = [{"date": d, "people": headcounts.get(d, {})} for d in dates]
-    fav = (f"Saved favourite recipes you may reuse (to reuse one, return \"saved_recipe\": \"<exact name>\" "
-           f"instead of \"recipe\"): {json.dumps(list(favorites)[:40])}.\n" if favorites else "")
+    fav = (f"The cook's FAVOURITE recipes: reuse 2-4 of them this week where they fit (to reuse one, return "
+           f"\"saved_recipe\": \"<exact name>\" instead of \"recipe\"): {json.dumps(list(favorites)[:40])}.\n"
+           if favorites else "")
     prompt = (
         f"Plan breakfast, lunch and dinner for these days. `people` gives the number of people eating each meal; "
         f"write each recipe for that many servings: {json.dumps(days)}.\n"
         f"Pantry on hand: {json.dumps(sorted(pantry_names)[:150])}.\n"
-        f"{_use_soon_line(list(use_soon))}{fav}"
+        f"{_use_soon_line(list(use_soon))}{fav}{_prices_line(prices)}"
         f"Avoid repeating recent meals: {json.dumps(list(avoid)[:40])}.\n"
         f"Extra notes: {notes or 'none'}.\n"
         f"Return JSON: a list of {{\"date\":\"YYYY-MM-DD\",\"slot\":\"breakfast|lunch|dinner\",\"recipe\":{RECIPE_SHAPE}}}."
@@ -154,12 +160,12 @@ def generate_week(dates, headcounts, pantry_names, avoid=(), notes="", use_soon=
     return items, bad
 
 
-def regenerate_meal(date, slot, headcount, pantry_names, current_name="", hint="", use_soon=()):
+def regenerate_meal(date, slot, headcount, pantry_names, current_name="", hint="", use_soon=(), prices=()):
     for _ in range(2):
         prompt = (
             f"Suggest ONE {slot} for {date} for {headcount} people, different from '{current_name}'. "
             f"Pantry: {json.dumps(sorted(pantry_names)[:150])}. Hint: {hint or 'none'}.\n"
-            f"{_use_soon_line(list(use_soon))}"
+            f"{_use_soon_line(list(use_soon))}{_prices_line(prices)}"
             f"Return JSON: {RECIPE_SHAPE}"
         )
         r = _first(_ask(prompt))
@@ -183,8 +189,9 @@ def read_receipt(image_b64):
     r = _ask('This is a grocery receipt (often Costco or King Soopers, with abbreviations like '
              '"KS ORG EGGS 24CT"). List the FOOD and drink items only (skip fees, tax, bags, deposits, '
              'non-food). Return JSON: {"store":"costco|costco_business|king_soopers|other","items":[{"name":str,'
-             '"qty":number,"unit":str,"pack_size":str,"category":str}]}. name = plain product name '
-             '("Kirkland organic eggs"); qty = packages bought; pack_size from the abbreviation if shown.',
+             '"qty":number,"unit":str,"pack_size":str,"category":str,"price":number}]}. name = plain product name '
+             '("Kirkland organic eggs"); qty = packages bought; pack_size from the abbreviation if shown; '
+             'price = what that line cost in USD after any instant savings on the receipt.',
              max_tokens=4000, image_b64=image_b64, timeout=240)
     if isinstance(r, list):
         r = {"store": "other", "items": r}
@@ -260,15 +267,16 @@ def import_recipe(text=None, url=None):
             raise RuntimeError("Could not fetch that page.")
         parsed = recipes.scrape(html, url)          # recipe-scrapers: free and exact for 500+ sites
         if parsed:
-            if parsed.get("calories") is None and available():
+            if (parsed.get("calories") is None or parsed.get("cost_per_serving") is None) and available():
                 try:                                # one small call to fill in macros the page did not publish
                     lines = [" ".join(str(i.get(k) or "") for k in ("qty", "unit", "name")).strip()
                              for i in parsed["ingredients"]]
                     est = _first(_ask(
-                        f"Estimate macros per serving for this recipe ({parsed['servings']} servings). Return JSON "
-                        '{"calories":number,"protein":number,"carbs":number,"fat":number}.\n' + json.dumps(lines),
+                        f"Estimate macros and cost per serving for this recipe ({parsed['servings']} servings). Return JSON "
+                        '{"calories":number,"protein":number,"carbs":number,"fat":number,"cost_per_serving":number}.\n'
+                        + json.dumps(lines),
                         max_tokens=300, timeout=120))
-                    parsed.update({k: est.get(k) for k in ("calories", "protein", "carbs", "fat")
+                    parsed.update({k: est.get(k) for k in ("calories", "protein", "carbs", "fat", "cost_per_serving")
                                    if isinstance(est.get(k), (int, float))})
                 except Exception:
                     pass

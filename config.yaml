@@ -1,6 +1,6 @@
 name: "Meal & Grocery Planner"
 description: "Weekly AI meal plans, recipes, a pantry you fill by scanning barcodes, and a store-grouped grocery list synced to Home Assistant."
-version: "0.1.1"
+version: "0.1.2"
 slug: "meal_planner"
 image: "ghcr.io/j0eyoung/{arch}-meal-planner"
 arch:
@@ -27,6 +27,13 @@ options:
   upcdatabase_api_key: ""
   recipeapi_key: ""
   recipeapi_monthly_budget: 450
+  pexels_api_key: ""
+  s3_endpoint: ""
+  s3_bucket: "lpchag"
+  s3_access_key: ""
+  s3_secret_key: ""
+  s3_region: "auto"
+  s3_prefix: "meals/images"
   todo_entity: "todo.shopping_list"
   notify_service: ""
   prep_reminder_time: "20:00"
@@ -38,6 +45,13 @@ schema:
   upcdatabase_api_key: password?
   recipeapi_key: password?
   recipeapi_monthly_budget: int(10,500)?
+  pexels_api_key: password?
+  s3_endpoint: url?
+  s3_bucket: str?
+  s3_access_key: password?
+  s3_secret_key: password?
+  s3_region: str?
+  s3_prefix: str?
   todo_entity: str?
   notify_service: str?
   prep_reminder_time: str?

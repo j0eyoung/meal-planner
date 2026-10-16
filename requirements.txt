@@ -5,3 +5,5 @@ anthropic>=0.40
 recipe-scrapers
 ingredient-parser-nlp
 tzdata
+boto3
+pillow

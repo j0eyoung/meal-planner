@@ -121,6 +121,11 @@ def add_items(items, store="", log=True):
                    (name, qty, unit, str(it.get("pack_size") or ""), str(it.get("category") or "")))
         if log:
             kitchen.log_purchase(name, store)
+        price = grocery.to_qty(it.get("price"))
+        if 0 < price < 2000:
+            db.run("INSERT INTO prices(name,key,store,price,qty,pack_size,date) VALUES(?,?,?,?,?,?,date('now'))",
+                   (name, grocery.norm(name), grocery.clean_store(store) if store else "", price, qty,
+                    str(it.get("pack_size") or "")))
         added.append(name)
     return added
 

@@ -69,6 +69,11 @@ def _num(s):
     return float(m.group(0)) if m else None
 
 
+def _cost(v):
+    v = _num(v) if v is not None else None
+    return round(v, 2) if v is not None and v < 500 else None
+
+
 def clean_recipe(r):
     """Coerce a recipe from Claude, a scraper or an outside API into safe types. Never raises."""
     r = r if isinstance(r, dict) else {}
@@ -86,6 +91,8 @@ def clean_recipe(r):
             "ingredients": clean_ingredients(r.get("ingredients")),
             "steps": clean_steps(r.get("steps")),
             "calories": macro("calories"), "protein": macro("protein"), "carbs": macro("carbs"), "fat": macro("fat"),
+            "cost": _cost(r.get("cost_per_serving", r.get("cost"))),
+            "image_src": str(r["image"])[:500] if str(r.get("image") or "").startswith("https://") else None,
             "source_url": str(r["source_url"])[:500] if r.get("source_url") else None}
 
 
@@ -109,7 +116,11 @@ def scrape(html, url):
             servings = int(_num(s.yields()) or 1)
         except Exception:
             servings = 1
-        return {"name": s.title(), "meal_type": "dinner", "servings": servings,
+        try:
+            image = s.image()
+        except Exception:
+            image = None
+        return {"name": s.title(), "meal_type": "dinner", "servings": servings, "image": image,
                 "ingredients": [parse_ingredient(i) for i in ingredients], "steps": steps,
                 "calories": _num(nut.get("calories")), "protein": _num(nut.get("proteinContent")),
                 "carbs": _num(nut.get("carbohydrateContent")), "fat": _num(nut.get("fatContent"))}

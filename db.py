@@ -53,6 +53,10 @@ CREATE TABLE IF NOT EXISTS grocery (
     checked INTEGER DEFAULT 0, synced INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS prices (          -- what things cost, from receipt photos
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT, key TEXT, store TEXT, price REAL, qty REAL, pack_size TEXT, date TEXT
+);
 CREATE TABLE IF NOT EXISTS purchases (       -- what was bought when, for grocery suggestions
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT, key TEXT, date TEXT, store TEXT
@@ -69,6 +73,8 @@ MIGRATIONS = [
     ("pantry", "category", "TEXT"), ("pantry", "expires", "TEXT"), ("pantry", "updated", "TEXT"),
     ("grocery", "note", "TEXT"), ("grocery", "checked", "INTEGER DEFAULT 0"),
     ("grocery", "synced", "INTEGER DEFAULT 0"), ("grocery", "stocked", "INTEGER DEFAULT 0"),
+    ("recipes", "cost", "REAL"), ("recipes", "image", "TEXT"), ("recipes", "image_src", "TEXT"),
+    ("recipes", "image_tries", "INTEGER DEFAULT 0"),
 ]
 
 # Indexes come after the migrations: an index on a column an old table lacks would stop start-up.
@@ -76,6 +82,7 @@ INDEXES = """
 CREATE UNIQUE INDEX IF NOT EXISTS recipes_ext ON recipes(origin, ext_id) WHERE ext_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS pantry_barcode ON pantry(barcode);
 CREATE INDEX IF NOT EXISTS purchases_key ON purchases(key);
+CREATE INDEX IF NOT EXISTS prices_key ON prices(key);
 """
 
 _keeper = None   # one connection held open so the WAL files are not created and deleted on every query
